@@ -1,0 +1,54 @@
+name: Deploy Command Engine
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-command-engine
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_USER: ${{ secrets.VPS_USER }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup SSH
+        env:
+          SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Sync code to VPS
+        run: |
+          rsync -azP --delete \
+            --exclude='.git' \
+            --exclude='node_modules' \
+            --exclude='dist' \
+            --exclude='.env*' \
+            -e "ssh -i ~/.ssh/deploy_key" \
+            ./ "$VPS_USER@$VPS_HOST:/opt/joeybuilt-ops/command-engine/"
+
+      - name: Rebuild and restart
+        run: |
+          ssh -i ~/.ssh/deploy_key "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
+          cd /opt/joeybuilt-ops/pushd/infra
+          docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build --no-deps command-engine 2>&1
+          for i in $(seq 1 30); do
+            STATUS=$(docker inspect --format='{{.State.Health.Status}}' joeybuilt-command-engine 2>/dev/null || echo "starting")
+            if [ "$STATUS" = "healthy" ]; then echo "command-engine: healthy"; exit 0; fi
+            sleep 5
+          done
+          echo "command-engine: failed to become healthy within 150s"
+          docker logs joeybuilt-command-engine --tail 30
+          exit 1
+          REMOTE
