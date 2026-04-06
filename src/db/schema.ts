@@ -182,3 +182,34 @@ export const installedConnections = pgTable('installed_connections', {
     uniqueIndex('installed_connections_workspace_registry_uq').on(table.workspaceId, table.registryId),
     index('installed_connections_workspace_idx').on(table.workspaceId),
 ])
+
+// ── Deploy History ──────────────────────────────────────────────
+
+export const deployStatusEnum = pgEnum('deploy_status', [
+    'pending',
+    'building',
+    'deploying',
+    'healthy',
+    'failed',
+    'rolled_back',
+])
+
+export const deploys = pgTable('deploys', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    app: text('app').notNull(),
+    commitSha: text('commit_sha').notNull(),
+    commitMessage: text('commit_message'),
+    branch: text('branch').default('main').notNull(),
+    status: deployStatusEnum('status').default('pending').notNull(),
+    triggeredBy: text('triggered_by').default('webhook').notNull(),
+    imageTag: text('image_tag'),
+    previousImageTag: text('previous_image_tag'),
+    durationMs: integer('duration_ms'),
+    error: text('error'),
+    healthCheckUrl: text('health_check_url'),
+    startedAt: timestamp('started_at', { mode: 'date' }).defaultNow().notNull(),
+    completedAt: timestamp('completed_at', { mode: 'date' }),
+}, (table) => [
+    index('deploys_app_idx').on(table.app),
+    index('deploys_started_idx').on(table.startedAt),
+])

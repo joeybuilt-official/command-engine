@@ -16,10 +16,12 @@ import { backupsRouter } from './backups.js'
 import { cronJobsRouter } from './cron-jobs.js'
 import { connectionsRouter } from './connections.js'
 import { aiProvidersRouter } from './ai-providers.js'
+import { deploymentsRouter } from './deployments.js'
 import { logger } from '../logger.js'
 
 export const cmdCenterRouter: RouterType = Router()
 
+cmdCenterRouter.use('/deployments', deploymentsRouter)
 cmdCenterRouter.use('/status', statusRouter)
 cmdCenterRouter.use('/coolify', coolifyRouter)
 cmdCenterRouter.use('/github', githubRouter)
