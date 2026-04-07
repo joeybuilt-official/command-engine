@@ -26,8 +26,8 @@ export {
     connectionsRegistry,
     installedConnections,
     deploys,
-    telemetryEvents,
-    telemetryErrors,
+    analyticsEvents,
+    errorReports,
     featureFlags,
 } from './schema.js'
 

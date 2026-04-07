@@ -1,19 +1,19 @@
 import { Router, type Router as RouterType, type Request } from 'express'
-import { db, telemetryEvents, telemetryErrors, sql, eq, and, desc, gte } from '../db/index.js'
+import { db, analyticsEvents, errorReports, sql, eq, and, desc, gte } from '../db/index.js'
 import { logger } from '../logger.js'
 
 // ── Table init (CREATE TABLE IF NOT EXISTS) ─────────────────────
 
-export async function initTelemetryTables(): Promise<void> {
+export async function initAnalyticsTables(): Promise<void> {
     await db.execute(sql`
         DO $$ BEGIN
-            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'telemetry_error_status') THEN
-                CREATE TYPE telemetry_error_status AS ENUM ('unresolved', 'resolved', 'ignored');
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'error_report_status') THEN
+                CREATE TYPE error_report_status AS ENUM ('unresolved', 'resolved', 'ignored');
             END IF;
         END $$
     `)
     await db.execute(sql`
-        CREATE TABLE IF NOT EXISTS telemetry_events (
+        CREATE TABLE IF NOT EXISTS analytics_events (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             instance_id TEXT NOT NULL,
             app TEXT NOT NULL DEFAULT 'plexo',
@@ -24,12 +24,12 @@ export async function initTelemetryTables(): Promise<void> {
             received_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
     `)
-    await db.execute(sql`CREATE INDEX IF NOT EXISTS telemetry_events_instance_received_idx ON telemetry_events (instance_id, received_at)`)
-    await db.execute(sql`CREATE INDEX IF NOT EXISTS telemetry_events_name_idx ON telemetry_events (event_name)`)
-    await db.execute(sql`CREATE INDEX IF NOT EXISTS telemetry_events_received_idx ON telemetry_events (received_at)`)
+    await db.execute(sql`CREATE INDEX IF NOT EXISTS analytics_events_instance_received_idx ON analytics_events (instance_id, received_at)`)
+    await db.execute(sql`CREATE INDEX IF NOT EXISTS analytics_events_name_idx ON analytics_events (event_name)`)
+    await db.execute(sql`CREATE INDEX IF NOT EXISTS analytics_events_received_idx ON analytics_events (received_at)`)
 
     await db.execute(sql`
-        CREATE TABLE IF NOT EXISTS telemetry_errors (
+        CREATE TABLE IF NOT EXISTS error_reports (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             instance_id TEXT NOT NULL,
             app TEXT NOT NULL DEFAULT 'plexo',
@@ -38,7 +38,7 @@ export async function initTelemetryTables(): Promise<void> {
             stack_trace TEXT,
             context JSONB NOT NULL DEFAULT '{}',
             deploy_id TEXT,
-            status telemetry_error_status NOT NULL DEFAULT 'unresolved',
+            status error_report_status NOT NULL DEFAULT 'unresolved',
             assigned_to TEXT,
             resolved_at TIMESTAMPTZ,
             first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -46,9 +46,9 @@ export async function initTelemetryTables(): Promise<void> {
             occurrence_count INT NOT NULL DEFAULT 1
         )
     `)
-    await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS telemetry_errors_instance_fingerprint_idx ON telemetry_errors (instance_id, fingerprint)`)
-    await db.execute(sql`CREATE INDEX IF NOT EXISTS telemetry_errors_status_idx ON telemetry_errors (status)`)
-    await db.execute(sql`CREATE INDEX IF NOT EXISTS telemetry_errors_last_seen_idx ON telemetry_errors (last_seen_at)`)
+    await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS error_reports_instance_fingerprint_idx ON error_reports (instance_id, fingerprint)`)
+    await db.execute(sql`CREATE INDEX IF NOT EXISTS error_reports_status_idx ON error_reports (status)`)
+    await db.execute(sql`CREATE INDEX IF NOT EXISTS error_reports_last_seen_idx ON error_reports (last_seen_at)`)
 
     await db.execute(sql`
         CREATE TABLE IF NOT EXISTS feature_flags (
@@ -63,7 +63,7 @@ export async function initTelemetryTables(): Promise<void> {
         )
     `)
 
-    logger.info('Telemetry tables initialized')
+    logger.info('Analytics & error tables initialized')
 }
 
 // ── Allowlists (must match Plexo's telemetry/router.ts) ────────
@@ -118,9 +118,9 @@ setInterval(() => {
 
 // ── Ingest routes (lightweight auth) ────────────────────────────
 
-export const telemetryIngestRouter: RouterType = Router()
+export const ingestRouter: RouterType = Router()
 
-telemetryIngestRouter.post('/ingest', async (req: Request, res) => {
+ingestRouter.post('/events', async (req: Request, res) => {
     const instanceId = (req as unknown as Record<string, unknown>).instanceId as string
     try {
         const { event_name, properties, plexo_version, node_version } = req.body as {
@@ -146,7 +146,7 @@ telemetryIngestRouter.post('/ingest', async (req: Request, res) => {
             }
         }
 
-        await db.insert(telemetryEvents).values({
+        await db.insert(analyticsEvents).values({
             instanceId,
             eventName: event_name,
             properties: clean,
@@ -156,12 +156,12 @@ telemetryIngestRouter.post('/ingest', async (req: Request, res) => {
 
         res.status(201).json({ ok: true })
     } catch (err) {
-        logger.error({ err }, 'telemetry ingest failed')
+        logger.error({ err }, 'analytics ingest failed')
         res.status(500).json({ error: { code: 'INTERNAL', message: 'Ingest failed' } })
     }
 })
 
-telemetryIngestRouter.post('/errors', async (req: Request, res) => {
+ingestRouter.post('/errors', async (req: Request, res) => {
     const instanceId = (req as unknown as Record<string, unknown>).instanceId as string
     try {
         const { fingerprint, message, stack_trace, context, deploy_id } = req.body as {
@@ -179,7 +179,7 @@ telemetryIngestRouter.post('/errors', async (req: Request, res) => {
             return
         }
 
-        await db.insert(telemetryErrors).values({
+        await db.insert(errorReports).values({
             instanceId,
             fingerprint,
             message,
@@ -187,25 +187,25 @@ telemetryIngestRouter.post('/errors', async (req: Request, res) => {
             context: context ?? {},
             deployId: deploy_id,
         }).onConflictDoUpdate({
-            target: [telemetryErrors.instanceId, telemetryErrors.fingerprint],
+            target: [errorReports.instanceId, errorReports.fingerprint],
             set: {
                 lastSeenAt: sql`NOW()`,
-                occurrenceCount: sql`${telemetryErrors.occurrenceCount} + 1`,
+                occurrenceCount: sql`${errorReports.occurrenceCount} + 1`,
             },
         })
 
         res.status(201).json({ ok: true })
     } catch (err) {
-        logger.error({ err }, 'telemetry error ingest failed')
+        logger.error({ err }, 'error ingest failed')
         res.status(500).json({ error: { code: 'INTERNAL', message: 'Error ingest failed' } })
     }
 })
 
 // ── Read routes (behind cmdCenterAuth) ──────────────────────────
 
-export const telemetryReadRouter: RouterType = Router()
+export const readRouter: RouterType = Router()
 
-telemetryReadRouter.get('/events', async (req, res) => {
+readRouter.get('/events', async (req, res) => {
     try {
         const range = (req.query.range as string) ?? '7d'
         const eventName = req.query.event_name as string | undefined
@@ -215,58 +215,58 @@ telemetryReadRouter.get('/events', async (req, res) => {
         const days = range.endsWith('d') ? parseInt(range) : 7
         const since = new Date(Date.now() - days * 86_400_000)
 
-        const conditions = [gte(telemetryEvents.receivedAt, since)]
-        if (eventName) conditions.push(eq(telemetryEvents.eventName, eventName))
-        if (instanceId) conditions.push(eq(telemetryEvents.instanceId, instanceId))
+        const conditions = [gte(analyticsEvents.receivedAt, since)]
+        if (eventName) conditions.push(eq(analyticsEvents.eventName, eventName))
+        if (instanceId) conditions.push(eq(analyticsEvents.instanceId, instanceId))
 
         const rows = await db.select()
-            .from(telemetryEvents)
+            .from(analyticsEvents)
             .where(and(...conditions))
-            .orderBy(desc(telemetryEvents.receivedAt))
+            .orderBy(desc(analyticsEvents.receivedAt))
             .limit(limit)
 
         res.json({ data: rows, count: rows.length })
     } catch (err) {
-        logger.error({ err }, 'telemetry events query failed')
+        logger.error({ err }, 'analytics events query failed')
         res.status(500).json({ error: { code: 'INTERNAL', message: 'Query failed' } })
     }
 })
 
-telemetryReadRouter.get('/errors', async (req, res) => {
+readRouter.get('/errors', async (req, res) => {
     try {
         const status = req.query.status as string | undefined
         const limit = Math.min(parseInt(req.query.limit as string) || 50, 200)
 
         const conditions = []
-        if (status) conditions.push(eq(telemetryErrors.status, status as 'unresolved' | 'resolved' | 'ignored'))
+        if (status) conditions.push(eq(errorReports.status, status as 'unresolved' | 'resolved' | 'ignored'))
 
         const rows = await db.select()
-            .from(telemetryErrors)
+            .from(errorReports)
             .where(conditions.length ? and(...conditions) : undefined)
-            .orderBy(desc(telemetryErrors.lastSeenAt))
+            .orderBy(desc(errorReports.lastSeenAt))
             .limit(limit)
 
         res.json({ data: rows, count: rows.length })
     } catch (err) {
-        logger.error({ err }, 'telemetry errors query failed')
+        logger.error({ err }, 'errors query failed')
         res.status(500).json({ error: { code: 'INTERNAL', message: 'Query failed' } })
     }
 })
 
-telemetryReadRouter.get('/summary', async (req, res) => {
+readRouter.get('/summary', async (req, res) => {
     try {
         const now = new Date()
         const day = new Date(now.getTime() - 86_400_000)
         const week = new Date(now.getTime() - 7 * 86_400_000)
 
         const [events24h] = await db.select({ count: sql<number>`count(*)` })
-            .from(telemetryEvents).where(gte(telemetryEvents.receivedAt, day))
+            .from(analyticsEvents).where(gte(analyticsEvents.receivedAt, day))
         const [events7d] = await db.select({ count: sql<number>`count(*)` })
-            .from(telemetryEvents).where(gte(telemetryEvents.receivedAt, week))
+            .from(analyticsEvents).where(gte(analyticsEvents.receivedAt, week))
         const [errorsUnresolved] = await db.select({ count: sql<number>`count(*)` })
-            .from(telemetryErrors).where(eq(telemetryErrors.status, 'unresolved'))
-        const [instances] = await db.select({ count: sql<number>`count(DISTINCT ${telemetryEvents.instanceId})` })
-            .from(telemetryEvents).where(gte(telemetryEvents.receivedAt, week))
+            .from(errorReports).where(eq(errorReports.status, 'unresolved'))
+        const [instances] = await db.select({ count: sql<number>`count(DISTINCT ${analyticsEvents.instanceId})` })
+            .from(analyticsEvents).where(gte(analyticsEvents.receivedAt, week))
 
         res.json({
             events24h: Number(events24h?.count ?? 0),
@@ -275,51 +275,51 @@ telemetryReadRouter.get('/summary', async (req, res) => {
             activeInstances7d: Number(instances?.count ?? 0),
         })
     } catch (err) {
-        logger.error({ err }, 'telemetry summary failed')
+        logger.error({ err }, 'analytics summary failed')
         res.status(500).json({ error: { code: 'INTERNAL', message: 'Summary failed' } })
     }
 })
 
-telemetryReadRouter.get('/instances', async (req, res) => {
+readRouter.get('/instances', async (req, res) => {
     try {
         const rows = await db.select({
-            instanceId: telemetryEvents.instanceId,
-            lastSeen: sql<Date>`MAX(${telemetryEvents.receivedAt})`,
+            instanceId: analyticsEvents.instanceId,
+            lastSeen: sql<Date>`MAX(${analyticsEvents.receivedAt})`,
             eventCount: sql<number>`count(*)`,
         })
-            .from(telemetryEvents)
-            .groupBy(telemetryEvents.instanceId)
-            .orderBy(sql`MAX(${telemetryEvents.receivedAt}) DESC`)
+            .from(analyticsEvents)
+            .groupBy(analyticsEvents.instanceId)
+            .orderBy(sql`MAX(${analyticsEvents.receivedAt}) DESC`)
             .limit(100)
 
         res.json({ data: rows })
     } catch (err) {
-        logger.error({ err }, 'telemetry instances query failed')
+        logger.error({ err }, 'analytics instances query failed')
         res.status(500).json({ error: { code: 'INTERNAL', message: 'Query failed' } })
     }
 })
 
-telemetryReadRouter.post('/errors/:id/resolve', async (req, res) => {
+readRouter.post('/errors/:id/resolve', async (req, res) => {
     try {
-        await db.update(telemetryErrors)
+        await db.update(errorReports)
             .set({ status: 'resolved', resolvedAt: new Date() })
-            .where(eq(telemetryErrors.id, req.params.id))
+            .where(eq(errorReports.id, req.params.id))
         res.json({ ok: true })
     } catch (err) {
-        logger.error({ err }, 'telemetry error resolve failed')
+        logger.error({ err }, 'error resolve failed')
         res.status(500).json({ error: { code: 'INTERNAL', message: 'Resolve failed' } })
     }
 })
 
-telemetryReadRouter.post('/errors/:id/assign', async (req, res) => {
+readRouter.post('/errors/:id/assign', async (req, res) => {
     try {
         const { assignee } = req.body as { assignee?: string }
-        await db.update(telemetryErrors)
+        await db.update(errorReports)
             .set({ assignedTo: assignee ?? null })
-            .where(eq(telemetryErrors.id, req.params.id))
+            .where(eq(errorReports.id, req.params.id))
         res.json({ ok: true })
     } catch (err) {
-        logger.error({ err }, 'telemetry error assign failed')
+        logger.error({ err }, 'error assign failed')
         res.status(500).json({ error: { code: 'INTERNAL', message: 'Assign failed' } })
     }
 })

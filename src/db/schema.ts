@@ -183,9 +183,9 @@ export const installedConnections = pgTable('installed_connections', {
     index('installed_connections_workspace_idx').on(table.workspaceId),
 ])
 
-// ── Telemetry ───────────────────────────────────────────────────
+// ── Analytics & Errors ───────────────────────────────────────────────────
 
-export const telemetryEvents = pgTable('telemetry_events', {
+export const analyticsEvents = pgTable('analytics_events', {
     id: uuid('id').defaultRandom().primaryKey(),
     instanceId: text('instance_id').notNull(),
     app: text('app').notNull().default('plexo'),
@@ -195,18 +195,18 @@ export const telemetryEvents = pgTable('telemetry_events', {
     nodeVersion: text('node_version'),
     receivedAt: timestamp('received_at', { mode: 'date', withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
-    index('telemetry_events_instance_received_idx').on(table.instanceId, table.receivedAt),
-    index('telemetry_events_name_idx').on(table.eventName),
-    index('telemetry_events_received_idx').on(table.receivedAt),
+    index('analytics_events_instance_received_idx').on(table.instanceId, table.receivedAt),
+    index('analytics_events_name_idx').on(table.eventName),
+    index('analytics_events_received_idx').on(table.receivedAt),
 ])
 
-export const telemetryErrorStatusEnum = pgEnum('telemetry_error_status', [
+export const errorReportStatusEnum = pgEnum('error_report_status', [
     'unresolved',
     'resolved',
     'ignored',
 ])
 
-export const telemetryErrors = pgTable('telemetry_errors', {
+export const errorReports = pgTable('error_reports', {
     id: uuid('id').defaultRandom().primaryKey(),
     instanceId: text('instance_id').notNull(),
     app: text('app').notNull().default('plexo'),
@@ -215,16 +215,16 @@ export const telemetryErrors = pgTable('telemetry_errors', {
     stackTrace: text('stack_trace'),
     context: jsonb('context').default('{}').notNull(),
     deployId: text('deploy_id'),
-    status: telemetryErrorStatusEnum('status').default('unresolved').notNull(),
+    status: errorReportStatusEnum('status').default('unresolved').notNull(),
     assignedTo: text('assigned_to'),
     resolvedAt: timestamp('resolved_at', { mode: 'date', withTimezone: true }),
     firstSeenAt: timestamp('first_seen_at', { mode: 'date', withTimezone: true }).defaultNow().notNull(),
     lastSeenAt: timestamp('last_seen_at', { mode: 'date', withTimezone: true }).defaultNow().notNull(),
     occurrenceCount: integer('occurrence_count').default(1).notNull(),
 }, (table) => [
-    uniqueIndex('telemetry_errors_instance_fingerprint_idx').on(table.instanceId, table.fingerprint),
-    index('telemetry_errors_status_idx').on(table.status),
-    index('telemetry_errors_last_seen_idx').on(table.lastSeenAt),
+    uniqueIndex('error_reports_instance_fingerprint_idx').on(table.instanceId, table.fingerprint),
+    index('error_reports_status_idx').on(table.status),
+    index('error_reports_last_seen_idx').on(table.lastSeenAt),
 ])
 
 export const featureFlags = pgTable('feature_flags', {

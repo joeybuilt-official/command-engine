@@ -4,11 +4,11 @@ import { timingSafeEqual as cryptoTimingSafeEqual } from 'node:crypto'
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /**
- * Lightweight auth for telemetry ingestion.
+ * Lightweight auth for analytics/error ingestion.
  * Requires X-Instance-Id header (valid UUID).
  * If TELEMETRY_SERVICE_KEY is set, also requires X-Service-Key to match.
  */
-export function telemetryIngestAuth(req: Request, res: Response, next: NextFunction): void {
+export function ingestAuth(req: Request, res: Response, next: NextFunction): void {
     const instanceId = req.headers['x-instance-id'] as string | undefined
 
     if (!instanceId || !UUID_RE.test(instanceId)) {
