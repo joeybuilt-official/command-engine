@@ -34,10 +34,15 @@ const GITHUB_WEBHOOK_SECRET = process.env.GITHUB_WEBHOOK_SECRET ?? ''
 
 /** Known apps and their compose service + health check URL */
 const APP_REGISTRY: Record<string, { service: string; repo: string; healthUrl?: string }> = {
-    'plexo-api':        { service: 'api',       repo: 'joeybuilt-official/plexo',         healthUrl: 'http://localhost:3001/health' },
-    'plexo-web':        { service: 'web',       repo: 'joeybuilt-official/plexo',         healthUrl: 'http://localhost:3000' },
-    'command-engine':   { service: 'command-engine', repo: 'joeybuilt-official/command-engine', healthUrl: 'http://localhost:3001/health' },
-    'command-center':   { service: 'command-center', repo: 'joeybuilt-official/command-center', healthUrl: 'http://localhost:3000' },
+    'plexo-api':        { service: 'plexo-api',       repo: 'joeybuilt-official/plexo',              healthUrl: 'http://plexo-api:3001/health' },
+    'plexo-saas':       { service: 'plexo-saas',      repo: 'joeybuilt-official/plexo',              healthUrl: 'http://plexo-saas:3000' },
+    'plexo-web':        { service: 'plexo-web',       repo: 'joeybuilt-official/plexo-web' },
+    'command-engine':   { service: 'command-engine',   repo: 'joeybuilt-official/command-engine',     healthUrl: 'http://command-engine:3001/health' },
+    'command-center':   { service: 'command-center',   repo: 'joeybuilt-official/command-center',     healthUrl: 'http://command-center:3000' },
+    'pushd':            { service: 'pushd',            repo: 'joeybuilt-official/pushd',              healthUrl: 'http://pushd:3000/health' },
+    'fylo':             { service: 'fylo',             repo: 'joeybuilt-official/fylo',               healthUrl: 'http://fylo:3000' },
+    'levio':            { service: 'levio',            repo: 'joeybuilt-official/levio',              healthUrl: 'http://levio:3000' },
+    'joeybuilt-website': { service: 'joeybuilt-website', repo: 'joeybuilt-official/joeybuilt-website' },
 }
 
 function dockerEnabled(): boolean {
