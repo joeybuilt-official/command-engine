@@ -2,7 +2,9 @@ import express from 'express'
 import cors from 'cors'
 import { logger } from './logger.js'
 import { cmdCenterAuth } from './middleware/auth.js'
+import { telemetryIngestAuth } from './middleware/telemetry-auth.js'
 import { cmdCenterRouter } from './routes/index.js'
+import { telemetryIngestRouter, initTelemetryTables } from './routes/telemetry.js'
 import { startHealthMonitor } from './health-monitor.js'
 import { deploymentsRouter, initDeploysTable } from './routes/deployments.js'
 
@@ -30,6 +32,9 @@ app.get('/health', (_req, res) => {
 // GitHub webhook — unauthenticated (HMAC signature only, GitHub can't send Bearer tokens)
 app.use('/api/v1/cmd-center/deployments/webhook', deploymentsRouter)
 
+// Telemetry ingest — lightweight auth (instance UUID + optional service key)
+app.use('/api/v1/cmd-center/telemetry', telemetryIngestAuth, telemetryIngestRouter)
+
 // Mount cmd-center routes with auth
 app.use('/api/v1/cmd-center', cmdCenterAuth, cmdCenterRouter)
 
@@ -38,9 +43,12 @@ const server = app.listen(PORT, () => {
     logger.info({ port: PORT }, 'command-engine started')
 })
 
-// Initialize deploys table
+// Initialize tables
 initDeploysTable().catch(err => {
     logger.error({ err }, 'Failed to init deploys table')
+})
+initTelemetryTables().catch(err => {
+    logger.error({ err }, 'Failed to init telemetry tables')
 })
 
 // Start health monitor if enabled

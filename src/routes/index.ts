@@ -17,11 +17,15 @@ import { cronJobsRouter } from './cron-jobs.js'
 import { connectionsRouter } from './connections.js'
 import { aiProvidersRouter } from './ai-providers.js'
 import { deploymentsRouter } from './deployments.js'
+import { telemetryReadRouter } from './telemetry.js'
+import { featureFlagsRouter } from './feature-flags.js'
 import { logger } from '../logger.js'
 
 export const cmdCenterRouter: RouterType = Router()
 
 cmdCenterRouter.use('/deployments', deploymentsRouter)
+cmdCenterRouter.use('/telemetry', telemetryReadRouter)
+cmdCenterRouter.use('/feature-flags', featureFlagsRouter)
 cmdCenterRouter.use('/status', statusRouter)
 cmdCenterRouter.use('/coolify', coolifyRouter)
 cmdCenterRouter.use('/github', githubRouter)

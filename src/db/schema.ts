@@ -183,6 +183,61 @@ export const installedConnections = pgTable('installed_connections', {
     index('installed_connections_workspace_idx').on(table.workspaceId),
 ])
 
+// ── Telemetry ───────────────────────────────────────────────────
+
+export const telemetryEvents = pgTable('telemetry_events', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    instanceId: text('instance_id').notNull(),
+    app: text('app').notNull().default('plexo'),
+    eventName: text('event_name').notNull(),
+    properties: jsonb('properties').default('{}').notNull(),
+    plexoVersion: text('plexo_version'),
+    nodeVersion: text('node_version'),
+    receivedAt: timestamp('received_at', { mode: 'date', withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+    index('telemetry_events_instance_received_idx').on(table.instanceId, table.receivedAt),
+    index('telemetry_events_name_idx').on(table.eventName),
+    index('telemetry_events_received_idx').on(table.receivedAt),
+])
+
+export const telemetryErrorStatusEnum = pgEnum('telemetry_error_status', [
+    'unresolved',
+    'resolved',
+    'ignored',
+])
+
+export const telemetryErrors = pgTable('telemetry_errors', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    instanceId: text('instance_id').notNull(),
+    app: text('app').notNull().default('plexo'),
+    fingerprint: text('fingerprint').notNull(),
+    message: text('message').notNull(),
+    stackTrace: text('stack_trace'),
+    context: jsonb('context').default('{}').notNull(),
+    deployId: text('deploy_id'),
+    status: telemetryErrorStatusEnum('status').default('unresolved').notNull(),
+    assignedTo: text('assigned_to'),
+    resolvedAt: timestamp('resolved_at', { mode: 'date', withTimezone: true }),
+    firstSeenAt: timestamp('first_seen_at', { mode: 'date', withTimezone: true }).defaultNow().notNull(),
+    lastSeenAt: timestamp('last_seen_at', { mode: 'date', withTimezone: true }).defaultNow().notNull(),
+    occurrenceCount: integer('occurrence_count').default(1).notNull(),
+}, (table) => [
+    uniqueIndex('telemetry_errors_instance_fingerprint_idx').on(table.instanceId, table.fingerprint),
+    index('telemetry_errors_status_idx').on(table.status),
+    index('telemetry_errors_last_seen_idx').on(table.lastSeenAt),
+])
+
+export const featureFlags = pgTable('feature_flags', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    key: text('key').notNull().unique(),
+    name: text('name'),
+    description: text('description'),
+    active: boolean('active').default(false).notNull(),
+    rolloutPercentage: integer('rollout_percentage').default(100).notNull(),
+    createdAt: timestamp('created_at', { mode: 'date' }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { mode: 'date' }).defaultNow().notNull(),
+})
+
 // ── Deploy History ──────────────────────────────────────────────
 
 export const deployStatusEnum = pgEnum('deploy_status', [

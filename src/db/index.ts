@@ -26,6 +26,9 @@ export {
     connectionsRegistry,
     installedConnections,
     deploys,
+    telemetryEvents,
+    telemetryErrors,
+    featureFlags,
 } from './schema.js'
 
 export { sql, eq, and, or, ne, desc, asc, inArray, isNull, isNotNull, ilike, lt, lte, gte, count } from 'drizzle-orm'
