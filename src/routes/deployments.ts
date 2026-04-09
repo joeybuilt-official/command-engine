@@ -71,59 +71,73 @@ function verifyGitHubSignature(req: Request): boolean {
  * No auth middleware (GitHub can't send Bearer tokens) — HMAC signature only
  */
 deploymentsRouter.post('/webhook/github', async (req, res) => {
-    const event = req.headers['x-github-event'] as string | undefined
-    if (event !== 'push') {
-        res.status(200).json({ ignored: true, reason: `event type: ${event}` })
-        return
-    }
-
-    if (GITHUB_WEBHOOK_SECRET && !verifyGitHubSignature(req)) {
-        logger.warn('GitHub webhook signature verification failed')
-        res.status(401).json({ error: 'Invalid signature' })
-        return
-    }
-
-    const body = req.body as {
-        ref?: string
-        after?: string
-        repository?: { full_name?: string }
-        head_commit?: { message?: string; author?: { name?: string } }
-    }
-
-    const branch = body.ref?.replace('refs/heads/', '') ?? 'unknown'
-    if (branch !== 'main') {
-        res.status(200).json({ ignored: true, reason: `branch: ${branch}` })
-        return
-    }
-
-    const repoFullName = body.repository?.full_name ?? ''
-    const commitSha = body.after ?? ''
-    const commitMessage = body.head_commit?.message?.split('\n')[0] ?? ''
-    const triggeredBy = body.head_commit?.author?.name ?? 'github-webhook'
-
-    // Find matching apps for this repo
-    const matchingApps = Object.entries(APP_REGISTRY).filter(([_, cfg]) => cfg.repo === repoFullName)
-
-    if (matchingApps.length === 0) {
-        logger.info({ repo: repoFullName }, 'No matching apps for repo — ignoring')
-        res.status(200).json({ ignored: true, reason: `no apps for repo: ${repoFullName}` })
-        return
-    }
-
-    logger.info({ repo: repoFullName, commit: commitSha.slice(0, 7), apps: matchingApps.map(([name]) => name) }, 'GitHub push received — triggering deploys')
-
-    // Trigger deploys asynchronously (don't block the webhook response)
-    const deployIds: string[] = []
-    for (const [appName, _cfg] of matchingApps) {
-        try {
-            const id = await triggerDeploy(appName, commitSha, commitMessage, branch, triggeredBy)
-            deployIds.push(id)
-        } catch (err) {
-            logger.error({ err, app: appName }, 'Failed to create deploy record')
+    try {
+        const event = req.headers['x-github-event'] as string | undefined
+        if (event !== 'push') {
+            res.status(200).json({ ignored: true, reason: `event type: ${event}` })
+            return
         }
-    }
 
-    res.status(202).json({ accepted: true, deployIds, apps: matchingApps.map(([name]) => name) })
+        if (GITHUB_WEBHOOK_SECRET && !verifyGitHubSignature(req)) {
+            logger.warn('GitHub webhook signature verification failed')
+            res.status(401).json({ error: 'Invalid signature' })
+            return
+        }
+
+        const body = req.body as {
+            ref?: string
+            after?: string
+            repository?: { full_name?: string }
+            head_commit?: { message?: string; author?: { name?: string } }
+        }
+
+        const branch = body.ref?.replace('refs/heads/', '') ?? 'unknown'
+        if (branch !== 'main') {
+            res.status(200).json({ ignored: true, reason: `branch: ${branch}` })
+            return
+        }
+
+        const repoFullName = body.repository?.full_name ?? ''
+        const commitSha = body.after ?? ''
+        const commitMessage = body.head_commit?.message?.split('\n')[0] ?? ''
+        const triggeredBy = body.head_commit?.author?.name ?? 'github-webhook'
+
+        // Find matching apps for this repo
+        const matchingApps = Object.entries(APP_REGISTRY).filter(([_, cfg]) => cfg.repo === repoFullName)
+
+        if (matchingApps.length === 0) {
+            logger.info({ repo: repoFullName }, 'No matching apps for repo — ignoring')
+            res.status(200).json({ ignored: true, reason: `no apps for repo: ${repoFullName}` })
+            return
+        }
+
+        logger.info({ repo: repoFullName, commit: commitSha.slice(0, 7), apps: matchingApps.map(([name]) => name) }, 'GitHub push received — triggering deploys')
+
+        // Trigger deploys asynchronously (don't block the webhook response)
+        const deployIds: string[] = []
+        const errors: string[] = []
+        for (const [appName, _cfg] of matchingApps) {
+            try {
+                const id = await triggerDeploy(appName, commitSha, commitMessage, branch, triggeredBy)
+                deployIds.push(id)
+            } catch (err: any) {
+                const msg = err?.message ?? String(err)
+                logger.error({ err: msg, app: appName }, 'Failed to create deploy record')
+                errors.push(`${appName}: ${msg}`)
+            }
+        }
+
+        if (deployIds.length === 0 && errors.length > 0) {
+            res.status(503).json({ error: 'All deploys failed to queue', errors })
+            return
+        }
+
+        res.status(202).json({ accepted: true, deployIds, apps: matchingApps.map(([name]) => name), ...(errors.length > 0 && { errors }) })
+    } catch (err: any) {
+        const msg = err?.message ?? String(err)
+        logger.error({ err: msg }, 'GitHub webhook handler crashed')
+        res.status(500).json({ error: 'Webhook processing failed', detail: msg })
+    }
 })
 
 // ── Deploy Executor ─────────────────────────────────────────────────────────
@@ -180,8 +194,21 @@ async function executeDeploy(
         await db.update(deploys).set({ status: 'building' }).where(eq(deploys.id, deployId))
         logger.info({ deployId, app, service }, 'Building image')
 
-        // Pull latest code
-        exec(`cd ${COMPOSE_DIR} && git pull origin main 2>&1`, 60_000)
+        // Pull latest code — reset hard to avoid dirty-tree failures
+        // (the self-updater and docker builds can leave untracked/modified files)
+        exec(`cd ${COMPOSE_DIR} && git fetch origin main && git reset --hard origin/main 2>&1`, 60_000)
+
+        // Pre-flight: check disk space (fail fast instead of mid-build)
+        try {
+            const dfOut = exec(`df -h ${COMPOSE_DIR} | tail -1`, 5_000)
+            const usePct = parseInt(dfOut.match(/(\d+)%/)?.[1] ?? '0', 10)
+            if (usePct >= 95) {
+                throw new Error(`Disk ${usePct}% full on ${COMPOSE_DIR} — aborting build to prevent corruption`)
+            }
+        } catch (e: any) {
+            if (e.message?.includes('Disk')) throw e
+            // df failed — not fatal, continue
+        }
 
         // Build new image (no downtime — old container still running)
         const imageTag = `${service}:${commitSha.slice(0, 12)}`
