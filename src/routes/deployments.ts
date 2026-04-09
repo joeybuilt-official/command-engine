@@ -192,6 +192,92 @@ async function updateDelivery(
     }
 }
 
+// ── Smoke Tests ────────────────────────────────────────────────────────────
+
+interface SmokeCheck {
+    name: string
+    passed: boolean
+    error?: string
+}
+
+interface SmokeResult {
+    passed: boolean
+    checks: SmokeCheck[]
+}
+
+/** Per-service smoke test definitions — HTTP checks against internal Docker network */
+const SMOKE_TESTS: Record<string, (baseUrl: string) => Promise<SmokeCheck[]>> = {
+    'plexo-api': async (baseUrl) => {
+        const checks: SmokeCheck[] = []
+
+        // Check /api/v1/health returns expected shape
+        try {
+            const res = await fetch(`${baseUrl}/api/v1/health`)
+            if (!res.ok) throw new Error(`HTTP ${res.status}`)
+            const body = await res.json() as Record<string, unknown>
+            const hasExpected = body && typeof body === 'object' && ('status' in body || 'ok' in body)
+            checks.push({ name: 'api-health-fields', passed: !!hasExpected, ...(!hasExpected && { error: 'Missing expected fields in /api/v1/health' }) })
+        } catch (e: any) {
+            checks.push({ name: 'api-health-fields', passed: false, error: e?.message ?? String(e) })
+        }
+
+        // Check Telegram channel info endpoint
+        try {
+            const res = await fetch(`${baseUrl}/api/v1/channels/telegram/info`)
+            if (!res.ok) throw new Error(`HTTP ${res.status}`)
+            const body = await res.json() as Record<string, unknown>
+            const configured = body && typeof body === 'object' && ('configured' in body || 'botUsername' in body || 'enabled' in body)
+            checks.push({ name: 'telegram-configured', passed: !!configured, ...(!configured && { error: 'Telegram config check returned unexpected shape' }) })
+        } catch (e: any) {
+            checks.push({ name: 'telegram-configured', passed: false, error: e?.message ?? String(e) })
+        }
+
+        return checks
+    },
+
+    'plexo-web': async (baseUrl) => {
+        const checks: SmokeCheck[] = []
+        try {
+            const res = await fetch(baseUrl)
+            checks.push({ name: 'main-page-200', passed: res.ok, ...(!res.ok && { error: `HTTP ${res.status}` }) })
+        } catch (e: any) {
+            checks.push({ name: 'main-page-200', passed: false, error: e?.message ?? String(e) })
+        }
+        return checks
+    },
+
+    'plexo-saas': async (baseUrl) => {
+        const checks: SmokeCheck[] = []
+        try {
+            const res = await fetch(baseUrl)
+            checks.push({ name: 'main-page-200', passed: res.ok, ...(!res.ok && { error: `HTTP ${res.status}` }) })
+        } catch (e: any) {
+            checks.push({ name: 'main-page-200', passed: false, error: e?.message ?? String(e) })
+        }
+        return checks
+    },
+}
+
+async function runSmokeTest(serviceName: string, healthUrl: string): Promise<SmokeResult> {
+    const testFn = SMOKE_TESTS[serviceName]
+    if (!testFn) {
+        // No smoke tests defined — pass by default (health check already passed)
+        return { passed: true, checks: [] }
+    }
+
+    // Derive base URL from healthUrl (strip path)
+    const url = new URL(healthUrl)
+    const baseUrl = `${url.protocol}//${url.host}`
+
+    try {
+        const checks = await testFn(baseUrl)
+        const passed = checks.every(c => c.passed)
+        return { passed, checks }
+    } catch (e: any) {
+        return { passed: false, checks: [{ name: 'smoke-runner', passed: false, error: e?.message ?? String(e) }] }
+    }
+}
+
 // ── Deploy Executor ─────────────────────────────────────────────────────────
 
 async function triggerDeploy(
@@ -291,7 +377,30 @@ async function executeDeploy(
             }
         }
 
-        // 5. Success
+        // 5. Smoke test (service-specific HTTP checks beyond basic health)
+        if (healthUrl) {
+            const smoke = await runSmokeTest(app, healthUrl)
+            for (const check of smoke.checks) {
+                logger.info({ deployId, app, check: check.name, passed: check.passed, error: check.error }, 'Smoke test check')
+            }
+
+            if (!smoke.passed) {
+                const failedChecks = smoke.checks.filter(c => !c.passed).map(c => `${c.name}: ${c.error}`).join('; ')
+                const durationMs = Date.now() - startMs
+                await db.update(deploys).set({
+                    status: 'smoke_failed',
+                    previousImageTag: previousTag,
+                    error: `Smoke test failed: ${failedChecks}`,
+                    durationMs,
+                    completedAt: new Date(),
+                }).where(eq(deploys.id, deployId))
+
+                logger.error({ deployId, app, service, failedChecks, durationMs }, 'Deploy smoke test failed')
+                return
+            }
+        }
+
+        // 6. Success
         const durationMs = Date.now() - startMs
         await db.update(deploys).set({
             status: 'healthy',
@@ -477,6 +586,12 @@ export async function initDeploysTable(): Promise<void> {
         `)
         await db.execute(sql`CREATE INDEX IF NOT EXISTS deploys_app_idx ON deploys (app)`)
         await db.execute(sql`CREATE INDEX IF NOT EXISTS deploys_started_idx ON deploys (started_at)`)
+
+        // Add smoke_failed to deploy_status enum if not present (idempotent)
+        try {
+            await db.execute(sql`ALTER TYPE deploy_status ADD VALUE IF NOT EXISTS 'smoke_failed'`)
+        } catch { /* enum value may already exist or type uses TEXT — fine either way */ }
+
         logger.info('Deploys table initialized')
     } catch (err) {
         logger.warn({ err }, 'Deploys table init failed (may already exist)')

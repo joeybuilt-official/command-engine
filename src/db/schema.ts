@@ -329,6 +329,7 @@ export const deployStatusEnum = pgEnum('deploy_status', [
     'deploying',
     'healthy',
     'failed',
+    'smoke_failed',
     'rolled_back',
 ])
 
