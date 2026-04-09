@@ -10,6 +10,7 @@ import { containersRouter } from './containers.js'
 import { databaseRouter } from './database.js'
 import { envRouter } from './env.js'
 import { healthTimelineRouter } from './health.js'
+import { healthTimelineRouter as infraHealthRouter } from './health-timeline.js'
 import { backupsRouter } from './backups.js'
 import { cronJobsRouter } from './cron-jobs.js'
 import { connectionsRouter } from './connections.js'
@@ -17,6 +18,7 @@ import { aiProvidersRouter } from './ai-providers.js'
 import { deploymentsRouter } from './deployments.js'
 import { readRouter } from './analytics.js'
 import { featureFlagsRouter } from './feature-flags.js'
+import { flagsRouter } from './flags.js'
 import { logger } from '../logger.js'
 
 export const cmdCenterRouter: RouterType = Router()
@@ -37,6 +39,8 @@ cmdCenterRouter.use('/backups', backupsRouter)
 cmdCenterRouter.use('/cron', cronJobsRouter)
 cmdCenterRouter.use('/connections', connectionsRouter)
 cmdCenterRouter.use('/ai-providers', aiProvidersRouter)
+cmdCenterRouter.use('/health-timeline', infraHealthRouter)
+cmdCenterRouter.use('/flags', flagsRouter)
 
 // Admin: seed connection registry entries (idempotent)
 cmdCenterRouter.post('/seed-registry', async (_req, res) => {

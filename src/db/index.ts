@@ -26,9 +26,13 @@ export {
     connectionsRegistry,
     installedConnections,
     deploys,
+    webhookDeliveries,
     analyticsEvents,
     errorReports,
     featureFlags,
+    serviceHealthEvents,
+    resourceMetrics,
+    issueFlags,
 } from './schema.js'
 
-export { sql, eq, and, or, ne, desc, asc, inArray, isNull, isNotNull, ilike, lt, lte, gte, count } from 'drizzle-orm'
+export { sql, eq, and, or, ne, desc, asc, inArray, isNull, isNotNull, ilike, lt, lte, gte, count, gt } from 'drizzle-orm'

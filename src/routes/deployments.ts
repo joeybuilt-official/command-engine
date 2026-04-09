@@ -21,8 +21,9 @@
 import { Router, type Router as RouterType, type Request } from 'express'
 import { execSync } from 'node:child_process'
 import * as crypto from 'node:crypto'
-import { db, sql, eq, desc } from '../db/index.js'
-import { deploys } from '../db/schema.js'
+import { ulid } from 'ulid'
+import { db, sql, eq, desc, and } from '../db/index.js'
+import { deploys, webhookDeliveries } from '../db/schema.js'
 import { logger } from '../logger.js'
 
 export const deploymentsRouter: RouterType = Router()
@@ -66,20 +67,48 @@ function verifyGitHubSignature(req: Request): boolean {
     return crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))
 }
 
+/** Build a short summary string from the GitHub push payload (no full payload stored) */
+function buildPayloadSummary(body: Record<string, any>): string {
+    const repo = body.repository?.full_name ?? 'unknown'
+    const branch = body.ref?.replace('refs/heads/', '') ?? 'unknown'
+    const sha = (body.after ?? '').slice(0, 7)
+    const msg = body.head_commit?.message?.split('\n')[0] ?? ''
+    return `${repo}#${branch}@${sha} — ${msg}`.slice(0, 500)
+}
+
 /**
  * POST /webhook/github — receives GitHub push webhook
  * No auth middleware (GitHub can't send Bearer tokens) — HMAC signature only
  */
 deploymentsRouter.post('/webhook/github', async (req, res) => {
+    const startMs = Date.now()
+    const deliveryId = ulid()
+    const event = req.headers['x-github-event'] as string | undefined
+
+    // Record every hit immediately
     try {
-        const event = req.headers['x-github-event'] as string | undefined
+        await db.insert(webhookDeliveries).values({
+            id: deliveryId,
+            source: 'github',
+            eventType: event ?? 'unknown',
+            payloadSummary: buildPayloadSummary(req.body ?? {}),
+            status: 'received',
+        })
+    } catch (insertErr: any) {
+        // If we can't even record it, log and continue — don't block the webhook
+        logger.error({ err: insertErr?.message, deliveryId }, 'Failed to insert webhook delivery record')
+    }
+
+    try {
         if (event !== 'push') {
+            await updateDelivery(deliveryId, 'skipped', Date.now() - startMs, null)
             res.status(200).json({ ignored: true, reason: `event type: ${event}` })
             return
         }
 
         if (GITHUB_WEBHOOK_SECRET && !verifyGitHubSignature(req)) {
             logger.warn('GitHub webhook signature verification failed')
+            await updateDelivery(deliveryId, 'failed', Date.now() - startMs, 'HMAC signature verification failed')
             res.status(401).json({ error: 'Invalid signature' })
             return
         }
@@ -93,6 +122,7 @@ deploymentsRouter.post('/webhook/github', async (req, res) => {
 
         const branch = body.ref?.replace('refs/heads/', '') ?? 'unknown'
         if (branch !== 'main') {
+            await updateDelivery(deliveryId, 'skipped', Date.now() - startMs, null)
             res.status(200).json({ ignored: true, reason: `branch: ${branch}` })
             return
         }
@@ -107,6 +137,7 @@ deploymentsRouter.post('/webhook/github', async (req, res) => {
 
         if (matchingApps.length === 0) {
             logger.info({ repo: repoFullName }, 'No matching apps for repo — ignoring')
+            await updateDelivery(deliveryId, 'skipped', Date.now() - startMs, null)
             res.status(200).json({ ignored: true, reason: `no apps for repo: ${repoFullName}` })
             return
         }
@@ -128,17 +159,38 @@ deploymentsRouter.post('/webhook/github', async (req, res) => {
         }
 
         if (deployIds.length === 0 && errors.length > 0) {
+            await updateDelivery(deliveryId, 'failed', Date.now() - startMs, errors.join('; '))
             res.status(503).json({ error: 'All deploys failed to queue', errors })
             return
         }
 
+        await updateDelivery(deliveryId, 'processed', Date.now() - startMs, null)
         res.status(202).json({ accepted: true, deployIds, apps: matchingApps.map(([name]) => name), ...(errors.length > 0 && { errors }) })
     } catch (err: any) {
         const msg = err?.message ?? String(err)
         logger.error({ err: msg }, 'GitHub webhook handler crashed')
+        await updateDelivery(deliveryId, 'failed', Date.now() - startMs, msg).catch(() => {})
         res.status(500).json({ error: 'Webhook processing failed', detail: msg })
     }
 })
+
+/** Update a webhook delivery record — fire-and-forget safe */
+async function updateDelivery(
+    id: string,
+    status: 'processed' | 'failed' | 'skipped',
+    processingTimeMs: number,
+    errorMessage: string | null,
+): Promise<void> {
+    try {
+        await db.update(webhookDeliveries).set({
+            status,
+            processingTimeMs,
+            errorMessage,
+        }).where(eq(webhookDeliveries.id, id))
+    } catch (err: any) {
+        logger.error({ err: err?.message, deliveryId: id }, 'Failed to update webhook delivery record')
+    }
+}
 
 // ── Deploy Executor ─────────────────────────────────────────────────────────
 
@@ -376,6 +428,31 @@ deploymentsRouter.get('/apps', (_req, res) => {
     res.json({ apps: Object.entries(APP_REGISTRY).map(([name, cfg]) => ({ name, ...cfg })) })
 })
 
+// ── Webhook Deliveries ─────────────────────────────────────────────────────
+
+deploymentsRouter.get('/webhook-deliveries', async (req, res) => {
+    const source = req.query.source as string | undefined
+    const status = req.query.status as string | undefined
+    const limit = Math.min(parseInt(req.query.limit as string) || 50, 200)
+    const offset = parseInt(req.query.offset as string) || 0
+
+    try {
+        const conditions = []
+        if (source) conditions.push(eq(webhookDeliveries.source, source))
+        if (status) conditions.push(eq(webhookDeliveries.status, status as any))
+
+        const query = conditions.length > 0
+            ? db.select().from(webhookDeliveries).where(and(...conditions)).orderBy(desc(webhookDeliveries.receivedAt)).limit(limit).offset(offset)
+            : db.select().from(webhookDeliveries).orderBy(desc(webhookDeliveries.receivedAt)).limit(limit).offset(offset)
+
+        const rows = await query
+        res.json({ deliveries: rows, count: rows.length, limit, offset })
+    } catch (err: any) {
+        logger.error({ err: err?.message }, 'Failed to fetch webhook deliveries')
+        res.status(500).json({ error: 'Failed to fetch webhook deliveries' })
+    }
+})
+
 // ── DB Init (call at startup) ───────────────────────────────────────────────
 
 export async function initDeploysTable(): Promise<void> {
@@ -403,5 +480,28 @@ export async function initDeploysTable(): Promise<void> {
         logger.info('Deploys table initialized')
     } catch (err) {
         logger.warn({ err }, 'Deploys table init failed (may already exist)')
+    }
+}
+
+export async function initWebhookDeliveriesTable(): Promise<void> {
+    try {
+        await db.execute(sql`
+            CREATE TABLE IF NOT EXISTS webhook_deliveries (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                payload_summary TEXT,
+                status TEXT NOT NULL DEFAULT 'received',
+                error_message TEXT,
+                processing_time_ms INT,
+                received_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `)
+        await db.execute(sql`CREATE INDEX IF NOT EXISTS webhook_deliveries_source_idx ON webhook_deliveries (source)`)
+        await db.execute(sql`CREATE INDEX IF NOT EXISTS webhook_deliveries_status_idx ON webhook_deliveries (status)`)
+        await db.execute(sql`CREATE INDEX IF NOT EXISTS webhook_deliveries_received_idx ON webhook_deliveries (received_at)`)
+        logger.info('Webhook deliveries table initialized')
+    } catch (err) {
+        logger.warn({ err }, 'Webhook deliveries table init failed (may already exist)')
     }
 }

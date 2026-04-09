@@ -6,7 +6,10 @@ import { ingestAuth } from './middleware/ingest-auth.js'
 import { cmdCenterRouter } from './routes/index.js'
 import { ingestRouter, initAnalyticsTables } from './routes/analytics.js'
 import { startHealthMonitor } from './health-monitor.js'
-import { deploymentsRouter, initDeploysTable } from './routes/deployments.js'
+import { startInfraHealthMonitor } from './jobs/health-monitor.js'
+import { deploymentsRouter, initDeploysTable, initWebhookDeliveriesTable } from './routes/deployments.js'
+import { flagsIngestRouter, initIssueFlagsTable } from './routes/flags.js'
+import { startFlagScanner } from './jobs/flag-scanner.js'
 
 const app = express()
 const PORT = parseInt(process.env.PORT ?? '3001', 10)
@@ -35,6 +38,9 @@ app.use('/api/v1/cmd-center/deployments/webhook', deploymentsRouter)
 // Analytics/error ingest — lightweight auth (instance UUID + optional service key)
 app.use('/api/v1/cmd-center/ingest', ingestAuth, ingestRouter)
 
+// Flag ingest from Plexo — same lightweight auth
+app.use('/api/v1/cmd-center/flags/ingest', ingestAuth, flagsIngestRouter)
+
 // Mount cmd-center routes with auth
 app.use('/api/v1/cmd-center', cmdCenterAuth, cmdCenterRouter)
 
@@ -47,13 +53,25 @@ const server = app.listen(PORT, () => {
 initDeploysTable().catch(err => {
     logger.error({ err }, 'Failed to init deploys table')
 })
+initWebhookDeliveriesTable().catch(err => {
+    logger.error({ err }, 'Failed to init webhook deliveries table')
+})
 initAnalyticsTables().catch(err => {
     logger.error({ err }, 'Failed to init analytics tables')
 })
+initIssueFlagsTable().catch(err => {
+    logger.error({ err }, 'Failed to init issue flags table')
+})
 
-// Start health monitor if enabled
+// Start health monitors
 startHealthMonitor().catch(err => {
     logger.error({ err }, 'Failed to start health monitor')
+})
+startInfraHealthMonitor().catch(err => {
+    logger.error({ err }, 'Failed to start infra health monitor')
+})
+startFlagScanner().catch(err => {
+    logger.error({ err }, 'Failed to start flag scanner')
 })
 
 // Graceful shutdown

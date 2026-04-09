@@ -73,6 +73,30 @@ export const taskSourceEnum = pgEnum('task_source', [
     'sentry',
 ])
 
+export const issueFlagSeverityEnum = pgEnum('issue_flag_severity', [
+    'critical',
+    'warning',
+    'info',
+])
+
+export const issueFlagCategoryEnum = pgEnum('issue_flag_category', [
+    'delivery_failure',
+    'service_outage',
+    'error_spike',
+    'empty_response',
+    'duplicate_response',
+    'timeout',
+    'disk_alert',
+    'webhook_failure',
+])
+
+export const issueFlagStatusEnum = pgEnum('issue_flag_status', [
+    'open',
+    'acknowledged',
+    'resolved',
+    'auto_resolved',
+])
+
 // ── Tables ───────────────────────────────────────────────────────
 
 export const workspaces = pgTable('workspaces', {
@@ -238,6 +262,65 @@ export const featureFlags = pgTable('feature_flags', {
     updatedAt: timestamp('updated_at', { mode: 'date' }).defaultNow().notNull(),
 })
 
+// ── Infrastructure Health ──────────────────────────────────────
+
+export const serviceHealthStatusEnum = pgEnum('service_health_status', [
+    'healthy',
+    'unhealthy',
+    'down',
+    'starting',
+])
+
+export const serviceHealthEvents = pgTable('service_health_events', {
+    id: text('id').primaryKey(),
+    serviceName: text('service_name').notNull(),
+    status: serviceHealthStatusEnum('status').notNull(),
+    previousStatus: text('previous_status'),
+    errorMessage: text('error_message'),
+    metadata: jsonb('metadata'),
+    recordedAt: timestamp('recorded_at', { mode: 'date', withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+    index('service_health_events_service_idx').on(table.serviceName),
+    index('service_health_events_recorded_idx').on(table.recordedAt),
+    index('service_health_events_status_idx').on(table.status),
+])
+
+export const resourceMetrics = pgTable('resource_metrics', {
+    id: text('id').primaryKey(),
+    metricType: text('metric_type').notNull(),
+    valuePercent: real('value_percent').notNull(),
+    valueRaw: text('value_raw'),
+    thresholdExceeded: boolean('threshold_exceeded').default(false).notNull(),
+    recordedAt: timestamp('recorded_at', { mode: 'date', withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+    index('resource_metrics_type_idx').on(table.metricType),
+    index('resource_metrics_recorded_idx').on(table.recordedAt),
+])
+
+// ── Webhook Deliveries ─────────────────────────────────────────
+
+export const webhookDeliveryStatusEnum = pgEnum('webhook_delivery_status', [
+    'received',
+    'processed',
+    'failed',
+    'skipped',
+])
+
+export const webhookDeliveries = pgTable('webhook_deliveries', {
+    id: text('id').primaryKey(),
+    source: text('source').notNull(),
+    eventType: text('event_type').notNull(),
+    payloadSummary: text('payload_summary'),
+    status: webhookDeliveryStatusEnum('status').default('received').notNull(),
+    errorMessage: text('error_message'),
+    processingTimeMs: integer('processing_time_ms'),
+    receivedAt: timestamp('received_at', { mode: 'date', withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+    index('webhook_deliveries_source_idx').on(table.source),
+    index('webhook_deliveries_status_idx').on(table.status),
+    index('webhook_deliveries_received_idx').on(table.receivedAt),
+])
+
 // ── Deploy History ──────────────────────────────────────────────
 
 export const deployStatusEnum = pgEnum('deploy_status', [
@@ -267,4 +350,27 @@ export const deploys = pgTable('deploys', {
 }, (table) => [
     index('deploys_app_idx').on(table.app),
     index('deploys_started_idx').on(table.startedAt),
+])
+
+// ── Issue Flags ──────────────────────────────────────────────────
+
+export const issueFlags = pgTable('issue_flags', {
+    id: text('id').primaryKey(),
+    severity: issueFlagSeverityEnum('severity').notNull(),
+    category: issueFlagCategoryEnum('category').notNull(),
+    title: text('title').notNull(),
+    detail: text('detail').notNull(),
+    sourceService: text('source_service').notNull(),
+    sourceId: text('source_id'),
+    status: issueFlagStatusEnum('status').default('open').notNull(),
+    resolvedBy: text('resolved_by'),
+    resolvedAt: timestamp('resolved_at', { mode: 'date', withTimezone: true }),
+    metadata: jsonb('metadata'),
+    createdAt: timestamp('created_at', { mode: 'date', withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+    index('issue_flags_severity_idx').on(table.severity),
+    index('issue_flags_category_idx').on(table.category),
+    index('issue_flags_status_idx').on(table.status),
+    index('issue_flags_created_idx').on(table.createdAt),
+    index('issue_flags_source_service_idx').on(table.sourceService),
 ])
