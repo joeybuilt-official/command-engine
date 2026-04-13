@@ -18,7 +18,8 @@
  *   4. Health check new container
  *   5. Log deploy to audit table
  */
-import { Router, type Router as RouterType, type Request } from 'express'
+import { Router, type Router as RouterType, type Request, type Response, type NextFunction } from 'express'
+import express from 'express'
 import { execSync } from 'node:child_process'
 import * as crypto from 'node:crypto'
 import { ulid } from 'ulid'
@@ -56,13 +57,25 @@ function exec(cmd: string, timeout = 30_000): string {
 
 // ── GitHub Push Webhook ─────────────────────────────────────────────────────
 
+/** Middleware: capture raw body for HMAC verification before JSON parsing */
+function captureRawBody(req: Request, _res: Response, next: NextFunction): void {
+    const chunks: Buffer[] = []
+    req.on('data', (chunk: Buffer) => chunks.push(chunk))
+    req.on('end', () => {
+        ;(req as any).rawBody = Buffer.concat(chunks)
+        next()
+    })
+    req.on('error', next)
+}
+
 function verifyGitHubSignature(req: Request): boolean {
-    if (!GITHUB_WEBHOOK_SECRET) return false
     const sig = req.headers['x-hub-signature-256'] as string | undefined
     if (!sig) return false
+    const body = (req as any).rawBody as Buffer | undefined
+    if (!body) return false
     const expected = 'sha256=' + crypto
         .createHmac('sha256', GITHUB_WEBHOOK_SECRET)
-        .update(JSON.stringify(req.body))
+        .update(body)
         .digest('hex')
     return crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))
 }
@@ -80,7 +93,7 @@ function buildPayloadSummary(body: Record<string, any>): string {
  * POST /webhook/github — receives GitHub push webhook
  * No auth middleware (GitHub can't send Bearer tokens) — HMAC signature only
  */
-deploymentsRouter.post('/webhook/github', async (req, res) => {
+deploymentsRouter.post('/webhook/github', captureRawBody, express.json({ limit: '1mb' }), async (req, res) => {
     const startMs = Date.now()
     const deliveryId = ulid()
     const event = req.headers['x-github-event'] as string | undefined
@@ -106,7 +119,14 @@ deploymentsRouter.post('/webhook/github', async (req, res) => {
             return
         }
 
-        if (GITHUB_WEBHOOK_SECRET && !verifyGitHubSignature(req)) {
+        if (!GITHUB_WEBHOOK_SECRET) {
+            logger.error('GITHUB_WEBHOOK_SECRET not configured — rejecting webhook')
+            await updateDelivery(deliveryId, 'failed', Date.now() - startMs, 'Webhook secret not configured')
+            res.status(500).json({ error: 'Webhook secret not configured' })
+            return
+        }
+
+        if (!verifyGitHubSignature(req)) {
             logger.warn('GitHub webhook signature verification failed')
             await updateDelivery(deliveryId, 'failed', Date.now() - startMs, 'HMAC signature verification failed')
             res.status(401).json({ error: 'Invalid signature' })

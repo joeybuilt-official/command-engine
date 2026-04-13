@@ -44,6 +44,12 @@ app.use('/api/v1/cmd-center/flags/ingest', ingestAuth, flagsIngestRouter)
 // Mount cmd-center routes with auth
 app.use('/api/v1/cmd-center', cmdCenterAuth, cmdCenterRouter)
 
+// Global error handler — must be after all routes
+app.use((err: any, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    logger.error({ err, method: req.method, url: req.url }, 'Unhandled error')
+    res.status(500).json({ error: 'Internal server error' })
+})
+
 // Start server
 const server = app.listen(PORT, () => {
     logger.info({ port: PORT }, 'command-engine started')
@@ -90,3 +96,11 @@ function shutdown(signal: string) {
 
 process.on('SIGTERM', () => shutdown('SIGTERM'))
 process.on('SIGINT', () => shutdown('SIGINT'))
+
+process.on('unhandledRejection', (reason) => {
+    logger.error({ reason }, 'Unhandled promise rejection')
+})
+process.on('uncaughtException', (err) => {
+    logger.fatal({ err }, 'Uncaught exception — shutting down')
+    process.exit(1)
+})

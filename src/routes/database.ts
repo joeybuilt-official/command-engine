@@ -5,6 +5,13 @@ import { logger } from '../logger.js'
 export const databaseRouter: RouterType = Router()
 
 const DB_NAME = process.env.INTROSPECT_DB ?? 'pushd'
+const IDENTIFIER_RE = /^[a-zA-Z_][a-zA-Z0-9_]*$/
+const DANGEROUS_KEYWORDS = /\b(DROP|DELETE|INSERT|UPDATE|ALTER|CREATE|TRUNCATE)\b/i
+
+function validateIdentifier(value: string, label: string): string | null {
+    if (!IDENTIFIER_RE.test(value)) return `Invalid ${label}: ${value}`
+    return null
+}
 
 function psql(query: string): string {
     const escaped = query.replace(/'/g, "'\\''")
@@ -32,6 +39,8 @@ databaseRouter.get('/schemas', async (_req, res) => {
 // GET /database/tables?schema=auth
 databaseRouter.get('/tables', async (req, res) => {
     const schema = (req.query.schema as string) ?? 'public'
+    const err = validateIdentifier(schema, 'schema')
+    if (err) { res.status(400).json({ error: err }); return }
     try {
         const raw = psql(`SELECT tablename, (SELECT COUNT(*)::int FROM information_schema.columns c WHERE c.table_schema = '${schema}' AND c.table_name = t.tablename) FROM pg_tables t WHERE schemaname = '${schema}' ORDER BY tablename`)
         const tables = raw.split('\n').filter(Boolean).map(line => {
@@ -49,6 +58,10 @@ databaseRouter.get('/table', async (req, res) => {
     const schema = (req.query.schema as string) ?? 'public'
     const table = req.query.table as string
     if (!table) { res.status(400).json({ error: 'table parameter required' }); return }
+    const schemaErr = validateIdentifier(schema, 'schema')
+    if (schemaErr) { res.status(400).json({ error: schemaErr }); return }
+    const tableErr = validateIdentifier(table, 'table')
+    if (tableErr) { res.status(400).json({ error: tableErr }); return }
     try {
         const colRaw = psql(`SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_schema = '${schema}' AND table_name = '${table}' ORDER BY ordinal_position`)
         const columns = colRaw.split('\n').filter(Boolean).map(line => {
@@ -66,13 +79,19 @@ databaseRouter.get('/table', async (req, res) => {
 databaseRouter.post('/query', async (req, res) => {
     const { query } = req.body as { query?: string }
     if (!query?.trim()) { res.status(400).json({ error: 'query required' }); return }
-    const normalized = query.trim().toUpperCase()
-    if (!normalized.startsWith('SELECT') && !normalized.startsWith('WITH') && !normalized.startsWith('EXPLAIN')) {
+    const sanitized = query.trim().replace(/;/g, '')
+    const normalized = sanitized.toUpperCase().replace(/\s+/g, ' ')
+    // Must truly start with SELECT/WITH/EXPLAIN (not buried after a comment or other statement)
+    if (!/^(SELECT|WITH|EXPLAIN)\s/i.test(sanitized.trim())) {
         res.status(403).json({ error: 'Only SELECT, WITH, and EXPLAIN queries are allowed' })
         return
     }
+    if (DANGEROUS_KEYWORDS.test(normalized)) {
+        res.status(403).json({ error: 'Query contains forbidden keywords' })
+        return
+    }
     try {
-        const raw = psql(query)
+        const raw = psql(sanitized)
         const lines = raw.split('\n').filter(Boolean)
         const rows = lines.map(line => {
             const cols = line.split('\t')

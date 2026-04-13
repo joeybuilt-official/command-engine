@@ -6,6 +6,8 @@ import { logger } from '../logger.js'
 
 export const backupsRouter: RouterType = Router()
 
+const BACKUP_FILENAME_RE = /^[a-zA-Z0-9_.-]+\.(sql|sql\.gz)$/
+
 const BACKUP_DIR = process.env.BACKUP_DIR ?? '/opt/backups'
 const PG_CONTAINER = process.env.POSTGRES_CONTAINER ?? 'postgres'
 const DATABASES = (process.env.BACKUP_DATABASES ?? 'pushd,plexo,command_engine').split(',').map(s => s.trim()).filter(Boolean)
@@ -100,7 +102,7 @@ backupsRouter.post('/restore', (req, res) => {
     if (!filename) { res.status(400).json({ error: 'filename required' }); return }
     if (!confirm) { res.status(400).json({ error: 'confirm: true required for restore' }); return }
 
-    if (filename.includes('/') || filename.includes('..')) {
+    if (!BACKUP_FILENAME_RE.test(filename)) {
         res.status(400).json({ error: 'Invalid filename' })
         return
     }
@@ -140,7 +142,7 @@ backupsRouter.delete('/:filename', (req, res) => {
     if (!dockerEnabled()) { res.status(503).json({ error: 'Docker socket not enabled' }); return }
     const { filename } = req.params
 
-    if (filename.includes('/') || filename.includes('..')) {
+    if (!BACKUP_FILENAME_RE.test(filename)) {
         res.status(400).json({ error: 'Invalid filename' })
         return
     }

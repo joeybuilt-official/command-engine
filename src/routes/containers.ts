@@ -4,6 +4,12 @@ import { logger } from '../logger.js'
 
 export const containersRouter: RouterType = Router()
 
+const CONTAINER_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.-]+$/
+
+function validateContainerName(name: string): boolean {
+    return CONTAINER_NAME_RE.test(name)
+}
+
 const COMPOSE_DIR = process.env.COMPOSE_DIR ?? '/opt/infra'
 const COMPOSE_FILES = process.env.COMPOSE_FILES ?? 'docker-compose.yml,docker-compose.prod.yml'
 const COMPOSE_CMD = COMPOSE_FILES.split(',').map(f => `-f ${COMPOSE_DIR}/${f.trim()}`).join(' ')
@@ -41,6 +47,7 @@ containersRouter.get('/', (_req, res) => {
 containersRouter.get('/:name/logs', (req, res) => {
     if (!dockerEnabled()) { res.status(503).json({ error: 'Docker socket not enabled' }); return }
     const { name } = req.params
+    if (!validateContainerName(name)) { res.status(400).json({ error: 'Invalid container name' }); return }
     const lines = parseInt(req.query.lines as string) || 50
     try {
         const logs = exec(`docker logs ${name} --tail ${lines} 2>&1`, 15_000)
@@ -54,6 +61,7 @@ containersRouter.get('/:name/logs', (req, res) => {
 containersRouter.post('/:name/restart', (req, res) => {
     if (!dockerEnabled()) { res.status(503).json({ error: 'Docker socket not enabled' }); return }
     const { name } = req.params
+    if (!validateContainerName(name)) { res.status(400).json({ error: 'Invalid container name' }); return }
     try {
         exec(`docker restart ${name}`, 60_000)
         logger.info({ container: name }, 'Container restarted')
@@ -67,6 +75,7 @@ containersRouter.post('/:name/restart', (req, res) => {
 containersRouter.post('/:name/rebuild', (req, res) => {
     if (!dockerEnabled()) { res.status(503).json({ error: 'Docker socket not enabled' }); return }
     const { name } = req.params
+    if (!validateContainerName(name)) { res.status(400).json({ error: 'Invalid container name' }); return }
     const prefix = process.env.COMPOSE_PROJECT_NAME ?? ''
     const service = prefix ? name.replace(new RegExp(`^${prefix}-`), '').replace(/-\d+$/, '') : name.replace(/-\d+$/, '')
     try {
@@ -82,6 +91,7 @@ containersRouter.post('/:name/rebuild', (req, res) => {
 containersRouter.post('/:name/stop', (req, res) => {
     if (!dockerEnabled()) { res.status(503).json({ error: 'Docker socket not enabled' }); return }
     const { name } = req.params
+    if (!validateContainerName(name)) { res.status(400).json({ error: 'Invalid container name' }); return }
     try {
         exec(`docker stop ${name}`, 30_000)
         logger.info({ container: name }, 'Container stopped')
@@ -95,6 +105,7 @@ containersRouter.post('/:name/stop', (req, res) => {
 containersRouter.post('/:name/start', (req, res) => {
     if (!dockerEnabled()) { res.status(503).json({ error: 'Docker socket not enabled' }); return }
     const { name } = req.params
+    if (!validateContainerName(name)) { res.status(400).json({ error: 'Invalid container name' }); return }
     try {
         exec(`docker start ${name}`, 30_000)
         logger.info({ container: name }, 'Container started')
