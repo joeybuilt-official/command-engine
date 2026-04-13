@@ -29,6 +29,9 @@ import { logger } from '../logger.js'
 
 export const deploymentsRouter: RouterType = Router()
 
+/** In-memory deploy mutex — prevents concurrent deploys racing on git + build */
+let deployLock: { app: string; since: Date } | null = null
+
 const COMPOSE_DIR = process.env.COMPOSE_DIR ?? '/opt/infra'
 const COMPOSE_FILES = process.env.COMPOSE_FILES ?? 'docker-compose.yml,docker-compose.prod.yml'
 const COMPOSE_CMD = COMPOSE_FILES.split(',').map(f => `-f ${COMPOSE_DIR}/${f.trim()}`).join(' ')
@@ -339,6 +342,19 @@ async function executeDeploy(
     commitSha: string,
     healthUrl?: string,
 ): Promise<void> {
+    // Acquire deploy mutex — only one deploy at a time
+    if (deployLock) {
+        const msg = `Deploy in progress for ${deployLock.app} since ${deployLock.since.toISOString()}`
+        logger.warn({ deployId, app, blockedBy: deployLock.app }, msg)
+        await db.update(deploys).set({
+            status: 'failed',
+            error: msg,
+            completedAt: new Date(),
+        }).where(eq(deploys.id, deployId))
+        return
+    }
+    deployLock = { app, since: new Date() }
+
     const startMs = Date.now()
 
     try {
@@ -440,6 +456,8 @@ async function executeDeploy(
         }).where(eq(deploys.id, deployId))
 
         logger.error({ err: err?.message, deployId, app, service, durationMs }, 'Deploy failed')
+    } finally {
+        deployLock = null
     }
 }
 
@@ -447,6 +465,11 @@ async function executeDeploy(
 
 deploymentsRouter.post('/:app/deploy', async (req, res) => {
     if (!dockerEnabled()) { res.status(503).json({ error: 'Docker not enabled' }); return }
+
+    if (deployLock) {
+        res.status(409).json({ error: `Deploy in progress for ${deployLock.app} since ${deployLock.since.toISOString()}` })
+        return
+    }
 
     const { app } = req.params
     const cfg = APP_REGISTRY[app]

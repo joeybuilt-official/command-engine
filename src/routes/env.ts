@@ -1,5 +1,7 @@
 import { Router, type Router as RouterType } from 'express'
 import { execSync } from 'node:child_process'
+import { readdirSync, unlinkSync } from 'node:fs'
+import { dirname, basename, join } from 'node:path'
 import { logger } from '../logger.js'
 
 export const envRouter: RouterType = Router()
@@ -145,6 +147,41 @@ envRouter.put('/', (req, res) => {
             currentContent = exec(`cat "${ENV_PATH}"`)
         } catch {
             // File might not exist yet
+        }
+
+        // Backup current file before overwriting
+        if (currentContent) {
+            const ts = new Date().toISOString().replace(/[:.]/g, '-')
+            const dir = dirname(ENV_PATH)
+            const base = basename(ENV_PATH)
+            const backupPath = join(dir, `${base}.backup.${ts}`)
+            try {
+                exec(`cp "${ENV_PATH}" "${backupPath}"`, 10_000)
+                logger.info({ backupPath }, 'Env file backed up')
+
+                // Keep only last 5 backups
+                const prefix = `${base}.backup.`
+                const backups = readdirSync(dir)
+                    .filter(f => f.startsWith(prefix))
+                    .sort()
+                const toDelete = backups.slice(0, Math.max(0, backups.length - 5))
+                for (const old of toDelete) {
+                    try { unlinkSync(join(dir, old)) } catch { /* ok */ }
+                }
+            } catch (backupErr: any) {
+                logger.warn({ err: backupErr?.message }, 'Failed to create env backup — proceeding anyway')
+            }
+        }
+
+        // Log which keys changed (not values)
+        const oldVars = parseEnvFile(currentContent)
+        const oldMap = new Map(oldVars.map(v => [v.key, v.value]))
+        const newMap = new Map(vars.map(v => [v.key, v.value]))
+        const added = vars.filter(v => !oldMap.has(v.key)).map(v => v.key)
+        const removed = oldVars.filter(v => !newMap.has(v.key)).map(v => v.key)
+        const changed = vars.filter(v => oldMap.has(v.key) && oldMap.get(v.key) !== v.value).map(v => v.key)
+        if (added.length || removed.length || changed.length) {
+            logger.info({ added, removed, changed }, 'Env file key changes')
         }
 
         const newContent = serializeEnvFile(vars, currentContent)

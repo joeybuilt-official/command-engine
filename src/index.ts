@@ -10,6 +10,7 @@ import { startInfraHealthMonitor } from './jobs/health-monitor.js'
 import { deploymentsRouter, initDeploysTable, initWebhookDeliveriesTable } from './routes/deployments.js'
 import { flagsIngestRouter, initIssueFlagsTable } from './routes/flags.js'
 import { startFlagScanner } from './jobs/flag-scanner.js'
+import { startDataCleanup } from './jobs/data-cleanup.js'
 
 const app = express()
 const PORT = parseInt(process.env.PORT ?? '3001', 10)
@@ -78,6 +79,9 @@ startInfraHealthMonitor().catch(err => {
 })
 startFlagScanner().catch(err => {
     logger.error({ err }, 'Failed to start flag scanner')
+})
+startDataCleanup().catch(err => {
+    logger.error({ err }, 'Failed to start data cleanup job')
 })
 
 // Graceful shutdown
