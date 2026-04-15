@@ -19,6 +19,8 @@ import { deploymentsRouter } from './deployments.js'
 import { readRouter } from './analytics.js'
 import { featureFlagsRouter } from './feature-flags.js'
 import { flagsRouter } from './flags.js'
+import { channelsRouter } from './channels.js'
+import { extensionsRouter as extProxyRouter } from './extensions.js'
 import { logger } from '../logger.js'
 
 export const cmdCenterRouter: RouterType = Router()
@@ -41,6 +43,8 @@ cmdCenterRouter.use('/connections', connectionsRouter)
 cmdCenterRouter.use('/ai-providers', aiProvidersRouter)
 cmdCenterRouter.use('/health-timeline', infraHealthRouter)
 cmdCenterRouter.use('/flags', flagsRouter)
+cmdCenterRouter.use('/channels', channelsRouter)
+cmdCenterRouter.use('/extensions', extProxyRouter)
 
 // Admin: seed connection registry entries (idempotent)
 cmdCenterRouter.post('/seed-registry', async (_req, res) => {
