@@ -3,7 +3,7 @@ import { db, eq } from '../db/index.js'
 import { workspaces } from '../db/index.js'
 import { freshResponse } from './cache.js'
 import { logger } from '../logger.js'
-import { encrypt } from '../crypto.js'
+import { encrypt, decrypt } from '../crypto.js'
 
 export const aiProvidersRouter: RouterType = Router()
 
@@ -181,6 +181,28 @@ aiProvidersRouter.post('/test', async (req, res) => {
 
         const normalised = provider.toLowerCase()
 
+        // Resolve stored key when frontend sends "__configured__"
+        let resolvedKey = apiKey
+        if (apiKey === '__configured__') {
+            const wsId = process.env.CMD_CENTER_WORKSPACE_ID
+            if (!wsId) {
+                res.json({ ok: false, message: 'No workspace configured' })
+                return
+            }
+            const [ws] = await db.select({ settings: workspaces.settings })
+                .from(workspaces).where(eq(workspaces.id, wsId)).limit(1)
+            const settings = ws?.settings as Record<string, unknown> | null
+            const vault = (settings?.vault ?? {}) as Record<string, { apiKey?: string }>
+            const legacy = (settings?.aiProviders as Record<string, unknown> | undefined)
+            const legacyProviders = (legacy?.providers ?? {}) as Record<string, { apiKey?: string }>
+            const encrypted = vault[normalised]?.apiKey || legacyProviders[normalised]?.apiKey
+            if (!encrypted) {
+                res.json({ ok: false, message: 'No API key stored for this provider' })
+                return
+            }
+            resolvedKey = decrypt(encrypted, wsId)
+        }
+
         // Ollama — no auth needed, just check tags
         if (normalised === 'ollama') {
             const url = (baseUrl || 'http://localhost:11434').replace(/\/$/, '')
@@ -202,7 +224,7 @@ aiProvidersRouter.post('/test', async (req, res) => {
             const resp = await fetch(`${url}/v1/messages`, {
                 method: 'POST',
                 headers: {
-                    'x-api-key': apiKey,
+                    'x-api-key': resolvedKey,
                     'anthropic-version': '2023-06-01',
                     'content-type': 'application/json',
                 },
@@ -244,7 +266,7 @@ aiProvidersRouter.post('/test', async (req, res) => {
         const url = (baseUrl || defaultBaseUrls[normalised] || `https://api.${normalised}.com/v1`).replace(/\/$/, '')
 
         const resp = await fetch(`${url}/models`, {
-            headers: { Authorization: `Bearer ${apiKey}` },
+            headers: { Authorization: `Bearer ${resolvedKey}` },
             signal: AbortSignal.timeout(10_000),
         })
 
