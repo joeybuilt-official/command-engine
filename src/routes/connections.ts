@@ -215,7 +215,7 @@ connectionsRouter.post('/test', async (req, res) => {
 
             url = url ?? decrypted.url ?? decrypted.baseUrl
             authType = authType ?? registry?.authType ?? 'api_key'
-            authValue = authValue ?? decrypted.apiKey ?? decrypted.token ?? decrypted.authValue
+            authValue = authValue ?? decrypted.apiKey ?? decrypted.token ?? decrypted.bot_token ?? decrypted.api_key ?? decrypted.authValue ?? decrypted.secret_key ?? decrypted.auth_token
         }
 
         // Provider-specific test logic for connections without a generic URL
