@@ -218,6 +218,31 @@ connectionsRouter.post('/test', async (req, res) => {
             authValue = authValue ?? decrypted.apiKey ?? decrypted.token ?? decrypted.authValue
         }
 
+        // Provider-specific test logic for connections without a generic URL
+        const registryId = req.body.registryId ?? (connectionId ? undefined : null)
+        let resolvedRegistryId = registryId
+        if (!resolvedRegistryId && connectionId) {
+            const [conn2] = await db.select({ registryId: installedConnections.registryId })
+                .from(installedConnections).where(eq(installedConnections.id, connectionId)).limit(1)
+            resolvedRegistryId = conn2?.registryId
+        }
+
+        if (resolvedRegistryId === 'telegram' || (!url && authValue)) {
+            // Telegram: test bot token via getMe
+            const token = authValue
+            if (!token) { res.status(400).json({ error: 'No bot token to test' }); return }
+            const tgResp = await fetch(`https://api.telegram.org/bot${token}/getMe`, {
+                signal: AbortSignal.timeout(10_000),
+            })
+            const tgData = await tgResp.json() as { ok: boolean; result?: { username: string } }
+            if (tgData.ok && tgData.result) {
+                res.json({ ok: true, status: 200, statusText: `Bot: @${tgData.result.username}`, contentType: 'application/json' })
+            } else {
+                res.json({ ok: false, status: tgResp.status, statusText: 'Invalid bot token', contentType: 'application/json' })
+            }
+            return
+        }
+
         if (!url) { res.status(400).json({ error: 'No URL to test' }); return }
 
         const headers: Record<string, string> = {}
