@@ -40,7 +40,7 @@ interface DockerPsEntry {
     Status: string
 }
 
-function parseContainerStatus(entry: DockerPsEntry): ContainerState {
+function parseContainerStatus(entry: DockerPsEntry): ContainerState | null {
     const state = entry.State?.toLowerCase() ?? ''
     const status = entry.Status?.toLowerCase() ?? ''
 
@@ -54,10 +54,13 @@ function parseContainerStatus(entry: DockerPsEntry): ContainerState {
         return { status: 'starting', raw: entry.Status }
     }
     if (state === 'running') {
-        // Running without healthcheck = healthy
         return { status: 'healthy', raw: entry.Status }
     }
-    // exited, dead, created, paused, etc.
+    // One-shot/init containers that exit cleanly — not a failure, skip alarming.
+    if (state === 'exited' && status.includes('exited (0)')) {
+        return null
+    }
+    // exited (non-zero), dead, created, paused, etc.
     return { status: 'down', raw: entry.Status }
 }
 
@@ -84,7 +87,13 @@ async function pollContainers(): Promise<void> {
     for (const entry of entries) {
         const name = entry.Names
         seenNames.add(name)
-        const { status, raw: rawStatus } = parseContainerStatus(entry)
+        const parsed = parseContainerStatus(entry)
+        if (!parsed) {
+            // Clean exit (0): mark as down so later prune doesn't re-alarm
+            lastKnownState.set(name, 'down')
+            continue
+        }
+        const { status, raw: rawStatus } = parsed
         const previous = lastKnownState.get(name)
 
         if (previous === status) continue // no change
