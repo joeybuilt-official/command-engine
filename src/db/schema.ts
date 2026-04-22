@@ -147,6 +147,9 @@ export const tasks = pgTable('tasks', {
     createdAt: timestamp('created_at', { mode: 'date' }).defaultNow().notNull(),
     claimedAt: timestamp('claimed_at', { mode: 'date' }),
     completedAt: timestamp('completed_at', { mode: 'date' }),
+    flagId: text('flag_id'),
+    executorBackend: text('executor_backend'),
+    executorMeta: jsonb('executor_meta'),
 }, (table) => [
     index('tasks_workspace_status_idx').on(table.workspaceId, table.status),
     index('tasks_workspace_project_idx').on(table.workspaceId, table.project),
@@ -367,6 +370,7 @@ export const issueFlags = pgTable('issue_flags', {
     resolvedBy: text('resolved_by'),
     resolvedAt: timestamp('resolved_at', { mode: 'date', withTimezone: true }),
     metadata: jsonb('metadata'),
+    taskId: text('task_id'),
     createdAt: timestamp('created_at', { mode: 'date', withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
     index('issue_flags_severity_idx').on(table.severity),

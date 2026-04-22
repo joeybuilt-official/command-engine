@@ -279,6 +279,9 @@ export async function initIssueFlagsTable(): Promise<void> {
         await db.execute(sql`CREATE INDEX IF NOT EXISTS issue_flags_created_idx ON issue_flags (created_at)`)
         await db.execute(sql`CREATE INDEX IF NOT EXISTS issue_flags_source_service_idx ON issue_flags (source_service)`)
 
+        // Phase 2: add task_id column
+        await db.execute(sql`ALTER TABLE issue_flags ADD COLUMN IF NOT EXISTS task_id TEXT`)
+
         logger.info('Issue flags table initialized')
     } catch (err) {
         logger.warn({ err }, 'Issue flags table init failed (may already exist)')

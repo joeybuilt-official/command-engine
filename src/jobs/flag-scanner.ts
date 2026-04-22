@@ -7,13 +7,53 @@
  * Scans webhook_deliveries, service_health_events, and resource_metrics
  * for anomalies and creates/escalates/auto-resolves issue flags.
  */
-import { db, sql, eq, and, gt, issueFlags } from '../db/index.js'
+import { db, sql, eq, and, gt, issueFlags, tasks } from '../db/index.js'
 import { webhookDeliveries, serviceHealthEvents, resourceMetrics } from '../db/schema.js'
 import { createFlag } from '../routes/flags.js'
 import { logger } from '../logger.js'
+import { ulid } from 'ulid'
+
+const AUTO_TASK_ON_CRITICAL = (process.env.AUTO_TASK_ON_CRITICAL ?? 'true') === 'true'
 
 const SCAN_INTERVAL = 5 * 60 * 1000 // 5 minutes
 let _timer: ReturnType<typeof setInterval> | null = null
+
+/** Auto-create a task for a critical flag (if enabled and not deduplicated) */
+async function maybeCreateTaskForFlag(
+    flagResult: { id: string; deduplicated: boolean },
+    severity: string,
+    title: string,
+    detail: string,
+): Promise<void> {
+    if (!AUTO_TASK_ON_CRITICAL) return
+    if (flagResult.deduplicated) return
+    if (severity !== 'critical') return
+
+    try {
+        const taskId = ulid()
+        const prompt = `[Auto-dispatched from flag ${flagResult.id}]\n\nIssue: ${title}\n\nDetail: ${detail}\n\nInvestigate and fix this issue. Check logs, service health, and recent changes. Apply the minimal safe fix.`
+
+        await db.insert(tasks).values({
+            id: taskId,
+            workspaceId: process.env.CMD_CENTER_WORKSPACE_ID ?? '',
+            type: 'ops',
+            status: 'queued',
+            priority: 10,
+            source: 'scanner',
+            context: { description: prompt } as Record<string, unknown>,
+            flagId: flagResult.id,
+        })
+
+        // Back-link flag to task
+        await db.update(issueFlags)
+            .set({ taskId })
+            .where(eq(issueFlags.id, flagResult.id))
+
+        logger.info({ flagId: flagResult.id, taskId }, 'flag-scanner: auto-created task for critical flag')
+    } catch (err) {
+        logger.error({ err, flagId: flagResult.id }, 'flag-scanner: failed to create task for flag')
+    }
+}
 
 // ── Webhook failure scanner ───────────────────────────────────────────────
 
@@ -34,14 +74,17 @@ async function scanWebhookFailures(): Promise<void> {
     for (const row of rows) {
         if (row.failCount > 3) {
             const severity = row.failCount > 10 ? 'critical' : 'warning'
-            await createFlag({
+            const title = `${row.source} webhook failed ${row.failCount} times in 15 min`
+            const detail = `Webhook deliveries from ${row.source} have ${row.failCount} failures in the last 15 minutes. Check the service health and webhook endpoint availability.`
+            const result = await createFlag({
                 severity,
                 category: 'webhook_failure',
-                title: `${row.source} webhook failed ${row.failCount} times in 15 min`,
-                detail: `Webhook deliveries from ${row.source} have ${row.failCount} failures in the last 15 minutes. Check the service health and webhook endpoint availability.`,
+                title,
+                detail,
                 source_service: 'command-engine',
                 metadata: { source: row.source, fail_count: row.failCount, window_minutes: 15 },
             })
+            await maybeCreateTaskForFlag(result, severity, title, detail)
         }
     }
 }
@@ -58,15 +101,18 @@ async function scanServiceOutages(): Promise<void> {
 
     for (const row of rows) {
         if (row.status === 'down') {
-            await createFlag({
+            const title = `${row.service_name} is down`
+            const detail = `Service ${row.service_name} reported status 'down'. Error: ${row.error_message ?? 'none'}. Last event at ${row.recorded_at}.`
+            const result = await createFlag({
                 severity: 'critical',
                 category: 'service_outage',
-                title: `${row.service_name} is down`,
-                detail: `Service ${row.service_name} reported status 'down'. Error: ${row.error_message ?? 'none'}. Last event at ${row.recorded_at}.`,
+                title,
+                detail,
                 source_service: 'command-engine',
                 source_id: null,
                 metadata: { service: row.service_name, error: row.error_message },
             })
+            await maybeCreateTaskForFlag(result, 'critical', title, detail)
         } else if (row.status === 'unhealthy') {
             await createFlag({
                 severity: 'warning',
@@ -120,15 +166,18 @@ async function scanDiskAlerts(): Promise<void> {
     const percent = latest.valuePercent
 
     if (percent >= 90) {
-        await createFlag({
+        const title = `Disk usage at ${percent}%`
+        const detail = `Root filesystem disk usage is ${percent}% (raw: ${latest.valueRaw}). Immediate action required — clean up docker images, logs, or expand storage.`
+        const result = await createFlag({
             severity: 'critical',
             category: 'disk_alert',
-            title: `Disk usage at ${percent}%`,
-            detail: `Root filesystem disk usage is ${percent}% (raw: ${latest.valueRaw}). Immediate action required — clean up docker images, logs, or expand storage.`,
+            title,
+            detail,
             source_service: 'command-engine',
             source_id: latest.id,
             metadata: { percent, raw: latest.valueRaw },
         })
+        await maybeCreateTaskForFlag(result, 'critical', title, detail)
     } else if (percent >= 85) {
         await createFlag({
             severity: 'warning',
@@ -178,6 +227,14 @@ async function escalateRepeatedFlags(): Promise<void> {
                 .set({ severity: 'critical', metadata: { ...meta, escalated_from: 'warning', escalated_at: new Date().toISOString() } })
                 .where(eq(issueFlags.id, flag.id))
             logger.warn({ flagId: flag.id, count }, 'flag-scanner: escalated warning to critical')
+
+            // Auto-create task for newly escalated critical flag
+            await maybeCreateTaskForFlag(
+                { id: flag.id, deduplicated: false },
+                'critical',
+                flag.title,
+                flag.detail,
+            )
         }
     }
 }

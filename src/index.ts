@@ -11,6 +11,7 @@ import { deploymentsRouter, initDeploysTable, initWebhookDeliveriesTable } from 
 import { flagsIngestRouter, initIssueFlagsTable } from './routes/flags.js'
 import { startFlagScanner } from './jobs/flag-scanner.js'
 import { startDataCleanup } from './jobs/data-cleanup.js'
+import { startTaskDispatcher } from './jobs/task-dispatcher.js'
 
 const app = express()
 const PORT = parseInt(process.env.PORT ?? '3001', 10)
@@ -82,6 +83,9 @@ startFlagScanner().catch(err => {
 })
 startDataCleanup().catch(err => {
     logger.error({ err }, 'Failed to start data cleanup job')
+})
+startTaskDispatcher().catch(err => {
+    logger.error({ err }, 'Failed to start task dispatcher')
 })
 
 // Graceful shutdown
