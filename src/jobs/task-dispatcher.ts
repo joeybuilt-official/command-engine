@@ -10,6 +10,7 @@
 import { db, sql, eq, tasks, issueFlags } from '../db/index.js'
 import { getExecutor } from '../executors/index.js'
 import { logger } from '../logger.js'
+import { sendTelegramMessage } from '../routes/telegram.js'
 
 const DISPATCH_INTERVAL = 30 * 1000 // 30 seconds
 let _timer: ReturnType<typeof setInterval> | null = null
@@ -90,6 +91,17 @@ async function dispatch(): Promise<void> {
 
             logger.info({ taskId, durationMs: result.durationMs }, 'task-dispatcher: task complete')
 
+            // Deliver result to Telegram if task came from there
+            if (candidate.source === 'telegram') {
+                const chatId = (ctx?.chatId as string) ?? null
+                if (chatId) {
+                    const summary = result.output.slice(0, 3500) || 'Task completed (no output)'
+                    await sendTelegramMessage(chatId, `Done.\n\n${summary}`).catch(err =>
+                        logger.error({ err, taskId }, 'task-dispatcher: telegram delivery failed')
+                    )
+                }
+            }
+
             // Auto-resolve linked flag if task succeeded
             const flagId = (candidate as Record<string, unknown>).flagId as string | null
             if (flagId) {
@@ -110,6 +122,15 @@ async function dispatch(): Promise<void> {
                 .where(eq(tasks.id, taskId))
 
             logger.warn({ taskId, error: result.error, attemptCount }, 'task-dispatcher: task failed, blocked')
+
+            if (candidate.source === 'telegram') {
+                const chatId = (ctx?.chatId as string) ?? null
+                if (chatId) {
+                    await sendTelegramMessage(chatId, `Task failed: ${result.error ?? 'unknown error'}`).catch(err =>
+                        logger.error({ err, taskId }, 'task-dispatcher: telegram delivery failed')
+                    )
+                }
+            }
         }
     } catch (err) {
         logger.error({ err }, 'task-dispatcher: dispatch loop error')

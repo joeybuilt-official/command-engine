@@ -10,7 +10,7 @@ export const agentsRouter: RouterType = Router()
 agentsRouter.get('/tasks', async (_req, res) => {
     try {
         const rows = await db
-            .select({ id: tasks.id, status: tasks.status, context: tasks.context, workspaceId: tasks.workspaceId, createdAt: tasks.createdAt, claimedAt: tasks.claimedAt, completedAt: tasks.completedAt })
+            .select({ id: tasks.id, status: tasks.status, context: tasks.context, workspaceId: tasks.workspaceId, source: tasks.source, outcomeSummary: tasks.outcomeSummary, createdAt: tasks.createdAt, claimedAt: tasks.claimedAt, completedAt: tasks.completedAt })
             .from(tasks)
             .orderBy(desc(tasks.createdAt))
             .limit(100)
@@ -19,6 +19,7 @@ agentsRouter.get('/tasks', async (_req, res) => {
             const ctx = t.context as Record<string, unknown> | null
             return {
                 id: t.id, status: t.status, description: (ctx?.description as string) ?? (ctx?.message as string) ?? '', productTarget: null,
+                source: t.source, outcomeSummary: t.outcomeSummary ?? null,
                 createdAt: t.createdAt, startedAt: t.claimedAt, completedAt: t.completedAt, result: null,
             }
         })))

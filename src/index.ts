@@ -12,6 +12,7 @@ import { flagsIngestRouter, initIssueFlagsTable } from './routes/flags.js'
 import { startFlagScanner } from './jobs/flag-scanner.js'
 import { startDataCleanup } from './jobs/data-cleanup.js'
 import { startTaskDispatcher } from './jobs/task-dispatcher.js'
+import { telegramWebhookRouter, initTelegramWebhook } from './routes/telegram.js'
 
 const app = express()
 const PORT = parseInt(process.env.PORT ?? '3001', 10)
@@ -42,6 +43,9 @@ app.use('/api/v1/cmd-center/ingest', ingestAuth, ingestRouter)
 
 // Flag ingest from Plexo — same lightweight auth
 app.use('/api/v1/cmd-center/flags/ingest', ingestAuth, flagsIngestRouter)
+
+// Telegram webhook — unauthenticated (Telegram can't send Bearer tokens)
+app.use('/api/v1/cmd-center/telegram', telegramWebhookRouter)
 
 // Mount cmd-center routes with auth
 app.use('/api/v1/cmd-center', cmdCenterAuth, cmdCenterRouter)
@@ -86,6 +90,9 @@ startDataCleanup().catch(err => {
 })
 startTaskDispatcher().catch(err => {
     logger.error({ err }, 'Failed to start task dispatcher')
+})
+initTelegramWebhook().catch(err => {
+    logger.warn({ err }, 'Telegram webhook init failed (non-fatal)')
 })
 
 // Graceful shutdown
