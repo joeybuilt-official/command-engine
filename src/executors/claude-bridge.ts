@@ -5,6 +5,7 @@ import type { TaskExecutor, ExecutorRequest, ExecutorResult } from './types.js'
 import { logger } from '../logger.js'
 
 const BRIDGE_URL = process.env.CLAUDE_BRIDGE_URL ?? 'http://host.docker.internal:9100'
+const BRIDGE_AUTH_KEY = process.env.CLAUDE_BRIDGE_AUTH_KEY ?? 'joeybuilt-claude-bridge-2026'
 
 export class ClaudeBridgeExecutor implements TaskExecutor {
     name = 'claude-bridge'
@@ -15,7 +16,10 @@ export class ClaudeBridgeExecutor implements TaskExecutor {
         try {
             const res = await fetch(`${BRIDGE_URL}/run`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${BRIDGE_AUTH_KEY}`,
+                },
                 body: JSON.stringify({
                     prompt: req.prompt,
                     cwd: req.cwd,
@@ -33,14 +37,15 @@ export class ClaudeBridgeExecutor implements TaskExecutor {
                 return { success: false, output: '', durationMs, error: `bridge returned ${res.status}: ${text}` }
             }
 
-            const body = await res.json() as Record<string, unknown>
+            const body = await res.json() as { ok: boolean; output?: string; error?: string }
+
+            if (!body.ok) {
+                return { success: false, output: body.output ?? '', durationMs, error: body.error ?? 'bridge returned ok:false' }
+            }
 
             return {
                 success: true,
-                output: (body.result as string) ?? (body.output as string) ?? JSON.stringify(body),
-                tokensIn: (body.tokensIn as number) ?? (body.tokens_in as number) ?? undefined,
-                tokensOut: (body.tokensOut as number) ?? (body.tokens_out as number) ?? undefined,
-                costUsd: (body.costUsd as number) ?? (body.cost_usd as number) ?? undefined,
+                output: body.output ?? '',
                 durationMs,
             }
         } catch (err) {
@@ -55,6 +60,7 @@ export class ClaudeBridgeExecutor implements TaskExecutor {
         try {
             const res = await fetch(`${BRIDGE_URL}/health`, {
                 method: 'GET',
+                headers: { 'Authorization': `Bearer ${BRIDGE_AUTH_KEY}` },
                 signal: AbortSignal.timeout(5_000),
             })
             return res.ok
