@@ -3,7 +3,7 @@
 
 import { Router, type Router as RouterType } from 'express'
 import { ulid } from 'ulid'
-import { db, issueFlags, eq, and, desc, sql, gt } from '../db/index.js'
+import { db, issueFlags, eq, and, desc, sql } from '../db/index.js'
 import { logger } from '../logger.js'
 
 export const flagsRouter: RouterType = Router()
@@ -31,9 +31,8 @@ export async function createFlag(params: {
     source_id?: string | null
     metadata?: Record<string, unknown> | null
 }): Promise<{ id: string; deduplicated: boolean }> {
-    const dedupWindow = new Date(Date.now() - 30 * 60 * 1000) // 30 minutes
-
-    // Check for existing open flag with same category+source_service+title within window
+    // Check for any existing open flag with same category+source_service+title (no time window —
+    // flags are auto-resolved when the condition clears, so open = still active)
     const [existing] = await db.select()
         .from(issueFlags)
         .where(and(
@@ -41,7 +40,6 @@ export async function createFlag(params: {
             eq(issueFlags.sourceService, params.source_service),
             eq(issueFlags.title, params.title),
             eq(issueFlags.status, 'open'),
-            gt(issueFlags.createdAt, dedupWindow),
         ))
         .limit(1)
 
