@@ -101,6 +101,8 @@ async function scanServiceOutages(): Promise<void> {
 
     for (const row of rows) {
         if (row.status === 'down') {
+            // Skip clean exits (exit code 0) — init/one-shot containers, not outages.
+            if (row.error_message?.toLowerCase().includes('exited (0)')) continue
             const title = `${row.service_name} is down`
             const detail = `Service ${row.service_name} reported status 'down'. Error: ${row.error_message ?? 'none'}. Last event at ${row.recorded_at}.`
             const result = await createFlag({
