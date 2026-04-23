@@ -99,10 +99,15 @@ async function scanServiceOutages(): Promise<void> {
         ORDER BY service_name, recorded_at DESC
     `) as any[]
 
+    const STALE_DOWN_MS = 24 * 60 * 60 * 1000 // 24 hours
+
     for (const row of rows) {
         if (row.status === 'down') {
             // Skip clean exits (exit code 0) — init/one-shot containers, not outages.
             if (row.error_message?.toLowerCase().includes('exited (0)')) continue
+            // Skip events older than 24h with no recovery — phantom/removed containers.
+            const age = Date.now() - new Date(row.recorded_at).getTime()
+            if (age > STALE_DOWN_MS) continue
             const title = `${row.service_name} is down`
             const detail = `Service ${row.service_name} reported status 'down'. Error: ${row.error_message ?? 'none'}. Last event at ${row.recorded_at}.`
             const result = await createFlag({
